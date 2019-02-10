@@ -1,6 +1,7 @@
 library(tidyverse)
 library(furrr)
 library(parallel)
+library(vegan)
 
 mrdat<-read.csv("data/2016_male_bee_dataset.csv")
 
@@ -27,4 +28,14 @@ lucydat<-future_map_dfr(1:nrow(fbees), function(x){
         summarize(pollen_units=n(), uID=fbees[[x,"uniqueID"]])
     return(out)
 } )
+
+head(lucydat)
+r<-lucydat%>%
+    group_by(uID)%>%
+    summarise(richness=n(), shannon=exp(diversity(pollen_units, index="shannon")))
+hist(r$richness)
+hist(r$shannon)
+lucydat<-lucydat%>%
+    unite("plant",c("plant_genus", "plant_species"))
+length(unique(lucydat$plant))
 
