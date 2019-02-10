@@ -13,8 +13,8 @@ pollenvis<-fbees %>% group_by(site, sampling_round, bee) %>%
 
 
 
-# options(future.plan="multiprocess", mc.cores = parallel::detectCores() - 1L)
-plan(multiprocess)
+nc<-detectCores()-1
+plan(strategy=multiprocess, workers=nc)
 
 lucydat<-future_map_dfr(1:nrow(fbees), function(x){
     thissite<-fbees[[x, "site"]]
