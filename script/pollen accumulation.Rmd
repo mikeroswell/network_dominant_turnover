@@ -1,10 +1,46 @@
-install.packages("furrr")
+---
+title: "pollen accumulation"
+author: "Lucia Weinman"
+date: "2/16/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 library(tidyverse)
 
+
+```{r libraries}
 library(furrr)
 library(parallel)
 library(vegan)
 library(bipartite)
+
+```
+
+```{r colleen's data}
 #colleen's data
 pollen<-read.csv("PollenData_formatted_4feb.csv")
 colleen<-read.csv("forest_pollen_spec.csv")
@@ -13,15 +49,24 @@ pollens<-unite(pollens, bee, genus, species)
 pollens<-pollens %>%
   mutate(pollen=replace(pollen, pollen=="na", "")) %>%
   as.data.frame()
-pollens<-pollens%>%
+#individual-level
+individualpollens<-pollens%>%
   group_by(site, date, bee, uniqueID, pollen)%>%
   summarize(counts=n())
+#wide format
+indpollens_wide<-spread(individualpollens, pollen, counts)
 
-#colleen's individual data in wide format
-pollens_wide<-spread(pollens, pollen, counts)
+#species level
+speciespollens<-pollens%>%
+  group_by(site, date, bee, pollen)%>%
+  summarize(counts=n())
 
+#wide format
+sppollens_wide<-spread(speciespollens, pollen, counts)
 
-#michael's data
+```
+
+```{r michael's data}
 mrdat<-read.csv("data/2016_male_bee_dataset.csv")
 
 fbees<-(mrdat %>% 
@@ -42,13 +87,7 @@ B2visits<-B2visits[order(rowSums(-B2visits, na.rm=T)),]
 B2visits<-B2visits%>%
   select(bee, everything())
 write.csv(B2visits, "B2visits.csv")
-
-
 #########POLLEN STUFF
-
-#first try at making the pollen data that doesn't really make sense
-pollenvis<-fbees %>% group_by(site, sampling_round, bee) %>% 
-  sample_n(10, replace=T)
 
 #####SIMULATING POLLEN DATA; each individual of each species samples plants in proportion to 
 #that's species' plant visits; each individual can visit n flowers in a foraging bout 
@@ -77,7 +116,10 @@ colleen<-read.csv("")
 head(lucydat1)
 lucydat1<-lucydat1%>%
   unite("plant",c("plant_genus", "plant_species"))
-###########INDIVIDUAL-LEVEL pollen stuff
+
+```
+
+```{r looking at diversities of pollen in malebee simulated pollen data}
 #shannon and richness of individual loads at each site and round
 h<-c(2,4,6)
 h/sum(h)
@@ -98,11 +140,7 @@ hist(filter(r, site=="Baldpate")$simpson)
 plot(filter(r, site=="Baldpate")$richness,filter(r, site=="Baldpate")$shannon)
 plot(filter(r, site=="Baldpate")$richness,filter(r, site=="Baldpate")$simpson)
 
-#
-
-
-
-#individual load diversity by bee species at Baldpate
+##individual load diversity by bee species at Baldpate
 Bald<-filter(diversities, site=="Baldpate")
 Bald1<-filter(Bald, sampling_round=="1")
 Bald1<-arrange(Bald1, bee)
@@ -110,24 +148,30 @@ Bald1
 Bald1
 ggplot(Bald1, aes(x=bee, y=richness) )+
   geom_jitter()
+```
 
+```{r INDIVIDUAL LEVEL POLLEN STUFF}
 #######FOR EACH BEE SPECIES, ACCUMULATION OF POLLEN TAXA ACROSS INDIVIDUAL LOADS.
-#each individual collected ten grains of pollen. 
-
-#pollen accumulation data (across loads) for all species at Baldpate
-Baldpate2<-filter(lucydat1, site=="Baldpate"&sampling_round=="2")
-species<-unique(Baldpate2$bee)
-
+#pollen accumulation(across individuals) for abundant species at Bowman's Hill Preserve (all #dates)
+#drop NA pollens
+indpollens_noNAs<-individualpollens%>%drop_na(pollen)
+BHP<-filter(indpollens_noNAs, site=="BHP")
+thing<-group_by(BHP, bee)%>%
+  summarise(n=length(unique(uniqueID)))
+BHP<-filter(BHP, site=="BHP", bee%in%filter(thing, n>5)$bee)
+species<-unique(BHP$bee)
 blah<-c("richness","iteration","individuals","species")
-for (k in 1:length(species)){
-  sp<-filter(Baldpate2, bee==species[k])
-  IDs<-unique(sp$uID)
-for (j in 1:length(IDs)){
-for(i in 1:50){
-sampleIDs<-sp[sample(length(IDs), j, replace=F),]
-sample<-filter(sp, uID%in%sampleIDs$uID)
 
-blah<-rbind(blah,c(length(unique(sample$plant)),i,j,k)) 
+for (k in 1:length(species)){
+  sp<-filter(BHP, bee==species[k])
+  IDs<-unique(sp$uniqueID)
+for (j in 1:length(IDs)){
+  #comb<-combn(IDs,j)
+for(i in 1:50){#ncol(comb))
+sampleIDs<-filter(sp, uniqueID%in%IDs[sample(length(IDs), j, replace=F)])#comb[,i]))
+
+
+blah<-rbind(blah,c(length(unique(sampleIDs$pollen)),i,j,k)) 
 
 }}
 }
@@ -135,17 +179,20 @@ blah<-rbind(blah,c(length(unique(sample$plant)),i,j,k))
 blah<-as.data.frame(blah)
 names(blah)<-c("richness","iteration","individuals","species")
 blah<-blah[2:length(blah$richness),]
+blah$individuals<-as.numeric(as.character(blah$individuals))
+blah$richness<-as.numeric(as.character(blah$richness))
 
-onebee<-filter(blah, species=="5")
-onebee$individuals<-as.numeric(onebee$individuals)
-onebee<-arrange(onebee, individuals)
+ggplot(blah, aes(x=individuals, y=richness))+
+  geom_boxplot(aes(group=individuals))+
+  facet_wrap(~species)+
+  labs(title="Accumulation of pollen taxa across individuals")
+  
 
-ggplot(onebee, aes(x=individuals, y=as.numeric(richness)))+
-  geom_boxplot(aes(group=individuals))
+```
 
-
+```{r}
 #############BEE-SPECIES LEVEL pollen stuff
-#bee species level pollen composition; the number of "grains" of each plant collected by each bee species 
+#bee species level pollen composition; the number of "grains" of each plant collected by each bee #species 
 
 speciespollen<-lucydat1%>%
   group_by(site, sampling_round, bee, plant)%>%
@@ -169,9 +216,9 @@ B2comp_wide<-B2comp_wide%>%
 
 B2comp_wide<-B2comp_wide%>%
   select(bee, everything())
+```
 
-
-
+```{r threshold}
 #select pollens that meet 80% threshold for each species. subset full species by pollen taxa data frame
 #for each bee's vector of pollen abundances, randomly select a pollen. if it's grains
 #meet or exceed 0.8*sum(vector), return a 1 for that species and don't add any other species. if it's 
@@ -203,6 +250,42 @@ subcom<-function(com){
     #subsam(y)}
   ))
 }
+```
+
+```{r accumulation across species at 1 site}
+sppollens_alldates<-pollens%>%
+  group_by(site, bee, pollen)%>%
+  summarize(counts=n())
+sppollens_noNAs<-sppollens_alldates%>%drop_na(pollen)
+BHP2<-filter(sppollens_noNAs, site=="BHP")
+BHP2<-filter(BHP2, bee%in%filter(thing, n>5)$bee)
+species<-unique(BHP2$bee)
+
+acc<-c("richness","combination","#species")
+
+#for (k in 1:length(species)){
+ 
+for (j in 1:length(species)){
+  comb<-combn(species,j)
+for(i in 1:ncol(comb)){
+sample<-filter(BHP2, bee%in%comb[,i])
+acc<-rbind(acc,c(length(unique(sample$pollen)),i,j)) 
+
+}
+}
+
+acc<-as.data.frame(acc)
+names(acc)<-c("richness","combination","species")
+acc<-acc[2:length(acc$richness),]
+acc$species<-as.numeric(as.character(acc$species))
+acc$richness<-as.numeric(as.character(acc$richness))
+
+ggplot(acc, aes(x=species, y=richness))+
+  geom_boxplot(aes(group=species))+
+  #facet_wrap(~species)+
+  labs(title="Accumulation of pollen taxa across bee species")
+  
+```
 
 #then need to create accumulation of the dominant pollens identitified in the last step across species
 #convert to tidy format and use approach from individual accumulation?
