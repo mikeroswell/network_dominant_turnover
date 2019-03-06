@@ -7,40 +7,14 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
-
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
-library(tidyverse)
-
-
-```{r libraries}
 library(furrr)
 library(parallel)
 library(vegan)
 library(bipartite)
-
 ```
 
-```{r colleen's data}
+
+```{r colleen's data - this is the observed pollen data}
 #colleen's data
 pollen<-read.csv("PollenData_formatted_4feb.csv")
 colleen<-read.csv("forest_pollen_spec.csv")
@@ -62,7 +36,8 @@ speciespollens<-pollens%>%
   summarize(counts=n())
 
 #wide format
-sppollens_wide<-spread(speciespollens, pollen, counts)
+sppollens_wide<-spread(drop_na(speciespollens[,c(1, 3:5)], pollen), pollen, counts)
+
 
 ```
 
@@ -186,7 +161,8 @@ ggplot(blah, aes(x=individuals, y=richness))+
   geom_boxplot(aes(group=individuals))+
   facet_wrap(~species)+
   labs(title="Accumulation of pollen taxa across individuals")
-  
+
+
 
 ```
 
@@ -218,90 +194,346 @@ B2comp_wide<-B2comp_wide%>%
   select(bee, everything())
 ```
 
-```{r threshold}
-#select pollens that meet 80% threshold for each species. subset full species by pollen taxa data frame
-#for each bee's vector of pollen abundances, randomly select a pollen. if it's grains
-#meet or exceed 0.8*sum(vector), return a 1 for that species and don't add any other species. if it's 
-#grains don't meet or exceed that, return a 1 and then add another species. if the total # grains between the
-#two species meets or exceeds the threshold, then done. if not, continue adding species etc. 
+```{r apply threshold to observed data to determine important/dominant pollen taxa}
+#select minimum set of pollens that meet 80% threshold for each species. subset full species by pollen taxa data frame
 
-###OR randomly sample 80% of each species pollen in each iteration. the pollen taxa that 
-#are in the 80% in that iteration are the dominant species for that bee species in that iteration.
-#function to take an abundance vector and subsample to size
-
-#Michael's functions to do the second thing:
-subsam<-function(ab_vec, size=0.8*sum(ab_vec)){
-  ab<-as.numeric(ab_vec)
-  spp<-length(ab)
-  l<-1:spp
-  inds<-unlist(lapply(l, function(x){
-    rep(x, ab[x])
-  }))
-  sam<-sample(inds, size=size, replace=F)
-  ss<-unlist(lapply(1:spp, function(y){
-    length(which(sam==y))
-  }))
-  return(ss)
-}
-?apply
-#take a subset of a bunch of community vectors, each subset of equal size 
-subcom<-function(com){
-  t(apply(com, 1,subsam #function(y){
-    #subsam(y)}
-  ))
-}
-```
-
-```{r accumulation across species at 1 site}
+## data frame to get number of each pollen taxa collected by each bee species at each site
 sppollens_alldates<-pollens%>%
   group_by(site, bee, pollen)%>%
   summarize(counts=n())
+
 sppollens_noNAs<-sppollens_alldates%>%drop_na(pollen)
-BHP2<-filter(sppollens_noNAs, site=="BHP")
-BHP2<-filter(BHP2, bee%in%filter(thing, n>5)$bee)
-species<-unique(BHP2$bee)
+
+##dropping NAs from the individual pollen data
+indpollens_noNAs<-individualpollens%>%drop_na(pollen)
+
+#set lower bound for bee species sample size at each site
+u=4
+
+sites<-unique(droplevels(sppollens_noNAs$site))
+dominants<-data.frame(site=NA, bee=NA, pollen=NA, counts=NA)
+
+for (j in 1:length(sites)){
+  #subset the individual pollen data by site
+ indSITE<-filter(droplevels(indpollens_noNAs), site==sites[j])
+ #get sample size for each bee species (number of individuals of each bee)
+thing<-group_by(indSITE, bee)%>%
+  summarise(n=length(unique(uniqueID)))
+
+#subset bee species pollen data by  site
+SITE<-filter(droplevels(sppollens_noNAs), site==sites[j])
+
+#filter out bees for which caught more than "u" individuals at that site
+SITE2<-filter(SITE, bee%in%filter(thing, n>u)$bee)
+species<-unique(SITE2$bee)
+
+#for each bee species, determine what the 80% threshold is
+for(i in 1:length(species)){
+  spp<-filter(SITE2, bee==species[i])
+  spp<-arrange(spp, desc(counts))
+  summ<-sum(spp$counts)
+  thresh<-0.8*summ
+  y<-1:length(spp$pollen)+2 #,"v", "meetthresh")
+  
+#starting with the pollen it collected the most of, cumulatively add all pollen taxa and ask whether the threshold is met.
+ for(v in 1:nrow(spp)){
+  min<-unlist(c(spp[1:v, 4], rep(0,nrow(spp)-v)))
+  d<-sum(min)>=thresh
+  #y will have 1 row for each combination of pollen taxa
+  y<-rbind(y, c(min, v, d))
+ }
+
+y<-as.data.frame(y)
+names(y)<-c(as.character(spp$pollen), "v", "meetthresh")
+#how many rows (combinations of taxa) did not meet the threshold?
+x<-nrow(filter(y[-1,], meetthresh==0))
+
+z<-y[-1,]
+#which pollen taxa are required to meet the threshold
+dominant<-names(y)[which(z[x+1,-c(length(y)-1, length(y))]>0)]
+
+#save that pollen
+dominants <-rbind(as.data.frame(dominants[,1:3]), as.data.frame(spp[c(which(as.character(spp$pollen)%in%dominant)),1:3]))
+}  
+
+}
+
+#there will be a lot of warnings saying that "number of columns of result is not a multiple of vector length", i have been ignoring them because i think it is all working as intended.
+```
+
+```{r observed accumulation of dom pollens across species, all sites}
+
+
 
 acc<-c("richness","combination","#species")
-
-#for (k in 1:length(species)){
- 
+species<-unique(dominants$bee)
 for (j in 1:length(species)){
-  comb<-combn(species,j)
-for(i in 1:ncol(comb)){
-sample<-filter(BHP2, bee%in%comb[,i])
+  #comb<-combn(species,j)
+for(i in 1:35){
+sample<-filter(dominants, bee%in%sample(species, j, replace=F))
 acc<-rbind(acc,c(length(unique(sample$pollen)),i,j)) 
+}
+}
 
-}
-}
 
 acc<-as.data.frame(acc)
 names(acc)<-c("richness","combination","species")
-acc<-acc[2:length(acc$richness),]
+acc<-acc[-1,]
 acc$species<-as.numeric(as.character(acc$species))
 acc$richness<-as.numeric(as.character(acc$richness))
 
 ggplot(acc, aes(x=species, y=richness))+
   geom_boxplot(aes(group=species))+
-  #facet_wrap(~species)+
   labs(title="Accumulation of pollen taxa across bee species")
-  
+
+
+means<-acc[,c(1,3)]%>%
+  group_by(species)%>%
+  summarize(mean=mean(richness))
+
+ #ggplot(means, aes(x=species, y=mean))+
+  #geom_line()+
+ # labs(title="Mean accumulation of pollen taxa across bee species") 
+```
+NULL DATA
+```{r null data, randomizing within sites}
+nullpollens<-data.frame(bee=NA, pollen=NA, iteration=NA, site=NA)
+ for(q in 1:50){
+for (j in 1:length(sites)){
+indSITE<-filter(droplevels(indpollens_noNAs), site==sites[j])
+
+beecounts<-group_by(indSITE, bee)%>%
+  summarise(n=length(unique(uniqueID)))
+bigbeecounts<-filter(beecounts, bee%in%filter(beecounts, n>u)$bee)
+species<-unique(bigbeecounts$bee)
+
+pollenSITEwide<-filter(droplevels(filter(sppollens_wide, bee%in%filter(beecounts, n>u)$bee)), site==sites[j])
+plantSAD<-as.numeric(colSums(pollenSITEwide[,-(1:3)], na.rm=T))
+plantsgathered<-gather(pollenSITEwide, pollen, counts, -site, -date, -bee)
+plants<-as.data.frame(cbind(unique(plantsgathered$pollen), plantSAD))
+
+for (i in 1:length(species)){
+  sp<-filter(bigbeecounts, bee==species[i])
+  null<-as.data.frame(cbind(c(rep(species[i], sp$n)),c(sample(as.character(plants$V1), sp$n, replace=T, prob=plantSAD)), c(rep(q, sp$n)), c(rep(as.character(sites[j]), sp$n))))
+names(null)<-names(nullpollens)
+  nullpollens<-rbind(nullpollens, null)
+}
+}
+ }
+
+#need to reformat nullpollens so that there's counts of each pollen for each species 
+gathered<-nullpollens[-1,]%>%
+  group_by(iteration, site, bee, pollen)%>%
+  summarise(counts=n())
+
+#then can apply the threshold to null data
+nulldominants<-data.frame(iteration=NA, site=NA, bee=NA, pollen=NA, counts=NA)
+for(q in 1:50){
+ whichiter <-filter(gathered, iteration==q)
+for (j in 1:length(sites)){
+SITE<-filter(droplevels(whichiter), site==sites[j])
+species<-unique(SITE$bee)
+
+for(i in 1:length(species)){
+  spp<-filter(SITE, bee==species[i])
+  spp<-arrange(spp, desc(counts))
+  summ<-sum(spp$counts)
+  thresh<-0.8*summ
+  y<-1:length(spp$pollen)+3 #,"v", "meetthresh")
+
+for(v in 1:nrow(spp)){
+  min<-unlist(c(spp[1:v, 5], rep(0,nrow(spp)-v)))
+  d<-sum(min)>=thresh
+  y<-rbind(y, c(min, v, d, q))
+ }
+
+y<-as.data.frame(y)
+names(y)<-c(as.character(spp$pollen), "v", "meetthresh", "iteration")
+x<-nrow(filter(y[-1,], meetthresh==0))
+z<-y[-1,]
+dominant<-names(y)[which(z[x+1,-c(length(y)-2,length(y)-1, length(y))]>0)]
+nulldompoll<-as.data.frame(spp[c(which(as.character(spp$pollen)%in%dominant)),-5])
+names(nulldompoll)<-names(nulldominants[,-5])
+nulldominants <-rbind(as.data.frame(nulldominants[,-5]),nulldompoll)
+
+}  
+
+}
+}
+#remove extra row at top
+nulldominants<-nulldominants[-1,]
+
+#then can do the null  accumulation 
+nullacc<-c("richness","combination","#species", "iteration")
+
+for (q in 1:50){
+
+  whichdomiter<-filter(nulldominants, iteration ==q)
+#for (k in 1:length(sites)){
+# SITE<-filter(whichdomiter, site==sites[k])
+ species<-unique(whichdomiter$bee)
+for (j in 1:length(species)){
+  for(i in 1:35){
+  combination<-filter(whichdomiter, bee%in%sample(species, j, replace=F))
+nullacc<-rbind(nullacc,c(length(unique(combination$pollen)),i,j,q)) 
+
+}
+}
+}
+
+
+
+nullacc<-as.data.frame(nullacc)
+names(nullacc)<-c("richness","combination","species", "iteration")
+nullacc<-nullacc[-1,]
+nullacc$species<-as.numeric(as.character(nullacc$species))
+nullacc$richness<-as.numeric(as.character(nullacc$richness))
+
+ggplot(nullacc, aes(x=species, y=richness))+
+  geom_boxplot(aes(group=species))+
+  #facet_wrap(~iteration)+
+  labs(title="null accumulation of dominant pollen taxa across bee species")
+
+#mean across combinations of different species within iterations, so variation is from iterations
+meannull<-nullacc%>%
+  group_by(iteration, species)%>%
+  summarise(mean=mean(richness))
+
+#still have weird increase in variation with increasing # species.
+ggplot(meannull, aes(x=species, y=mean))+
+  geom_boxplot(aes(group=species))+
+  #facet_wrap(~iteration)+
+  labs(title="mean null accumulation of dominant pollen taxa across bee species")
+
+#haven't gotten a plot with both observed and null to work yet
+ggplot()+
+  geom_line(acc, aes(x=species, y=richness,group=species))+
+    geom_boxplot(nullacc, aes(x=species, y=richness, group=species))+
+    labs(title="Accumulation of pollen taxa across bee species")
+
+#
+
+
+
 ```
 
-#then need to create accumulation of the dominant pollens identitified in the last step across species
-#convert to tidy format and use approach from individual accumulation?
-noID<-as.data.frame(B2comp_wide[,2:23])
-subsam(noID[1,])
-t<-length(noID[1,])
-t
-1:t
-as.vector(noID[1,1:t])
-lapply(1:t, function(x){
-  rep(x, noID[1,x])
-})
-rep(1,B2comp_wide[1,1])
-B2comp_wide[1,1]
-domcomp<-subcom(noID)
+```{r null randomizing across sites (draw visits by each bee species at each site from big pollen  sad across all sites)}
+wellsampled<-data.frame(bee=NA)
+for(t in 1:length(sites)){
+  #I want to save the names of the well-sampled bees at each site
+  indSITE<-filter(droplevels(indpollens_noNAs), site==sites[t])
+beecounts<-group_by(indSITE, bee)%>%
+  summarise(n=length(unique(uniqueID)))
+bigbeecounts<-filter(beecounts, bee%in%filter(beecounts, n>u)$bee)
+wellsampled<-rbind(wellsampled, data.frame(bee=unique(bigbeecounts$bee)))
+}
+justwellsampled<-filter(sppollens_wide, bee %in% wellsampled$bee)
 
-first<-noID[1,]
-as.numeric(first[1])
-first[1]
+plantSAD<-as.numeric(colSums(justwellsampled[,-(1:3)], na.rm=T))
+plantsgathered<-gather(justwellsampled, pollen, counts, -site, -date, -bee)
+plants<-as.data.frame(cbind(unique(plantsgathered$pollen), plantSAD))
+
+bignullpollens<-data.frame(bee=NA, pollen=NA, iteration=NA, site=NA)
+
+ for(q in 1:50){
+for (j in 1:length(sites)){
+indSITE<-filter(droplevels(indpollens_noNAs), site==sites[j])
+beecounts<-group_by(indSITE, bee)%>%
+  summarise(n=length(unique(uniqueID)))
+bigbees<-filter(beecounts, bee%in%filter(beecounts, n>u)$bee)
+species<-unique(bigbees$bee)
+for (i in 1:length(species)){
+  sp<-filter(bigbees, bee==species[i])
+  null<-as.data.frame(cbind(c(rep(species[i], sp$n)),c(sample(as.character(plants$V1), sp$n, replace=T, prob=plantSAD)), c(rep(q, sp$n)), c(rep(as.character(sites[j]), sp$n))))
+names(null)<-names(bignullpollens)
+  bignullpollens<-rbind(bignullpollens, null)
+}
+}
+ }
+
+#need to reformat bignullpollens so that there's counts of each pollen for each species 
+biggathered<-bignullpollens[-1,]%>%
+  group_by(iteration, site, bee, pollen)%>%
+  summarise(counts=n())
+
+#then can apply the threshold to null data
+bignulldominants<-data.frame(iteration=NA, site=NA, bee=NA, pollen=NA, counts=NA)
+for(q in 1:50){
+ whichiter <-filter(biggathered, iteration==q)
+for (j in 1:length(sites)){
+SITE<-filter(droplevels(whichiter), site==sites[j])
+species<-unique(SITE$bee)
+
+for(i in 1:length(species)){
+  spp<-filter(SITE, bee==species[i])
+  spp<-arrange(spp, desc(counts))
+  summ<-sum(spp$counts)
+  thresh<-0.8*summ
+  y<-1:length(spp$pollen)+3 #,"v", "meetthresh")
+
+for(v in 1:nrow(spp)){
+  min<-unlist(c(spp[1:v, 5], rep(0,nrow(spp)-v)))
+  d<-sum(min)>=thresh
+  y<-rbind(y, c(min, v, d, q))
+ }
+
+y<-as.data.frame(y)
+names(y)<-c(as.character(spp$pollen), "v", "meetthresh", "iteration")
+x<-nrow(filter(y[-1,], meetthresh==0))
+z<-y[-1,]
+dominant<-names(y)[which(z[x+1,-c(length(y)-2,length(y)-1, length(y))]>0)]
+nulldompoll<-as.data.frame(spp[c(which(as.character(spp$pollen)%in%dominant)),-5])
+names(nulldompoll)<-names(bignulldominants[,-5])
+bignulldominants <-rbind(as.data.frame(bignulldominants[,-5]),nulldompoll)
+
+}  
+
+}
+}
+
+#remove extra row at top
+bignulldominants<-bignulldominants[-1,]
+
+#then can do the  accumulation 
+bignullacc<-c("richness","combination","#species", "iteration")
+
+for (q in 1:50){
+  whichdomiter<-filter(bignulldominants, iteration ==q)
+#for (k in 1:length(sites)){
+# SITE<-filter(whichdomiter, site==sites[k])
+ species<-unique(whichdomiter$bee)
+for (j in 1:length(species)){
+  for(i in 1:35){
+  combination<-filter(whichdomiter, bee%in%sample(species, j, replace=F))
+bignullacc<-rbind(bignullacc,c(length(unique(combination$pollen)),i,j,q)) 
+
+}
+}
+}
+bignulldominants
+
+bignullacc<-as.data.frame(bignullacc)
+names(bignullacc)<-c("richness","combination","species", "iteration")
+bignullacc<-bignullacc[-1,]
+bignullacc$species<-as.numeric(as.character(bignullacc$species))
+bignullacc$richness<-as.numeric(as.character(bignullacc$richness))
+View(bignullacc)
+ggplot(bignullacc, aes(x=species, y=richness, color=iteration))+
+  geom_jitter(aes(group=species))+
+  #facet_wrap(~iteration)+
+  labs(title="across site null accumulation of dominant pollen taxa across bee species")
+
+#mean across combinations of different species within iterations, so variation is from iterations
+meanbignull<-bignullacc%>%
+  group_by(combination, species)%>%
+  summarise(mean=mean(richness))
+
+#i think the increase 
+ggplot(meanbignull, aes(x=species, y=mean, color=as.numeric(as.character(combination))))+
+  geom_point(aes(group=species))+
+  #facet_wrap(~iteration)+
+  labs(title="mean null accumulation of dominant pollen taxa across bee species")
+
+```
+
+
